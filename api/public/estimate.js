@@ -14,7 +14,7 @@ function normalizeOrigin(url) {
 }
 
 const TIERS = [
-  { max: 10,  price: 300,  label: 'Up to 10 pages' },
+  { max: 10,  price: 500,  label: 'Up to 10 pages' },
   { max: 50,  price: 1000, label: 'Up to 50 pages' },
   { max: 100, price: 2000, label: 'Up to 100 pages' },
   { max: 200, price: 3000, label: 'Up to 200 pages' },
