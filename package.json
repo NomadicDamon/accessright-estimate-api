@@ -1,0 +1,9 @@
+{
+  "name": "accessright-estimate-api",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Page count estimate API for AccessRight",
+  "engines": {
+    "node": ">=18"
+  }
+}
