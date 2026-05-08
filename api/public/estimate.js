@@ -1,6 +1,12 @@
-// Vercel serverless function — POST /api/public/estimate
-// Counts pages via sitemap (fast, accurate) with HTTP crawl fallback.
-// Designed to stay within Vercel Hobby's 10s execution limit.
+// Edge Function — streams page-discovery progress as SSE events.
+// Vercel Edge Runtime gives 30s, no crawl cap needed.
+export const config = { runtime: 'edge' };
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
 const IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|svg|ico|avif|bmp|tiff?)(\?.*)?$/i;
 
@@ -24,10 +30,16 @@ function getTier(count) {
   return TIERS.find(t => count <= t.max) ?? null;
 }
 
+function abortAfter(ms) {
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), ms);
+  return ctrl.signal;
+}
+
 async function findSitemapCandidates(origin) {
   const candidates = [];
   try {
-    const res = await fetch(`${origin}/robots.txt`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${origin}/robots.txt`, { signal: abortAfter(5000) });
     if (res.ok) {
       const text = await res.text();
       for (const m of text.match(/^Sitemap:\s*(.+)$/gim) ?? []) {
@@ -41,18 +53,19 @@ async function findSitemapCandidates(origin) {
   return candidates;
 }
 
-async function parseSitemap(url, urlSet, depth = 0) {
+async function parseSitemap(url, urlSet, onProgress, depth = 0) {
   if (depth > 5 || urlSet.size > 201) return;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { signal: abortAfter(5000) });
     if (!res.ok) return;
     const text = await res.text();
     for (const [, loc] of text.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/g)) {
       const trimmed = loc.trim();
       if (trimmed.endsWith('.xml') || trimmed.endsWith('.xml.gz')) {
-        await parseSitemap(trimmed, urlSet, depth + 1);
+        await parseSitemap(trimmed, urlSet, onProgress, depth + 1);
       } else {
         urlSet.add(trimmed);
+        if (urlSet.size % 5 === 0) onProgress({ type: 'progress', count: urlSet.size });
       }
       if (urlSet.size > 201) return;
     }
@@ -62,11 +75,11 @@ async function parseSitemap(url, urlSet, depth = 0) {
 function extractLinks(html, origin) {
   const links = new Set();
   const originHost = new URL(origin).hostname;
-  const hrefRegex = /href=["']([^"'#?]+)["']/gi;
-  let match;
-  while ((match = hrefRegex.exec(html)) !== null) {
+  const re = /href=["']([^"'#?]+)["']/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
     try {
-      const u = new URL(new URL(match[1], origin).href);
+      const u = new URL(new URL(m[1], origin).href);
       if (u.hostname === originHost && u.protocol.startsWith('http') && isPageUrl(u.href)) {
         u.hash = '';
         u.search = '';
@@ -77,94 +90,114 @@ function extractLinks(html, origin) {
   return Array.from(links);
 }
 
-// Crawl cap and time budget sized to stay within the 10s Vercel Hobby limit.
-const CRAWL_CAP = 40;
-const CRAWL_BUDGET_MS = 6000;
-
-async function crawlSite(origin) {
+async function crawlSite(origin, onProgress) {
   const visited = new Set();
   const queued = new Set([`${origin}/`]);
-  const deadline = Date.now() + CRAWL_BUDGET_MS;
+  const deadline = Date.now() + 25000; // leave 5s for overhead within the 30s Edge limit
 
-  while (queued.size > 0 && visited.size < CRAWL_CAP && Date.now() < deadline) {
-    const batch = Array.from(queued).slice(0, 5);
+  while (queued.size > 0 && visited.size <= 200 && Date.now() < deadline) {
+    const batch = Array.from(queued).slice(0, 10);
     for (const u of batch) queued.delete(u);
 
-    const results = await Promise.allSettled(
+    await Promise.allSettled(
       batch.map(async (url) => {
-        if (visited.has(url)) return [];
+        if (visited.has(url)) return;
         visited.add(url);
         try {
-          const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-          if (!res.ok) return [];
-          return extractLinks(await res.text(), origin);
-        } catch { return []; }
+          const res = await fetch(url, { signal: abortAfter(2000) });
+          if (!res.ok) return;
+          for (const link of extractLinks(await res.text(), origin)) {
+            if (!visited.has(link) && !queued.has(link)) queued.add(link);
+          }
+        } catch {}
       })
     );
 
-    for (const r of results) {
-      if (r.status === 'fulfilled') {
-        for (const link of r.value) {
-          if (!visited.has(link) && !queued.has(link)) queued.add(link);
-        }
-      }
-    }
+    onProgress({ type: 'progress', count: visited.size });
+    if (visited.size > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
   }
 
-  return {
-    count: visited.size,
-    hitCap: visited.size >= CRAWL_CAP || Date.now() >= deadline,
-  };
+  const count = visited.size;
+  if (count > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
+  const tier = getTier(count);
+  onProgress({ type: 'complete', pageCount: count, tier: tier?.label, price: tier?.price ?? null });
 }
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+async function discoverUrls(origin, onProgress) {
+  const candidates = await findSitemapCandidates(origin);
+  const discovered = new Set();
 
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  for (const candidate of candidates) {
+    await parseSitemap(candidate, discovered, onProgress);
+    if (discovered.size > 201) break;
+  }
 
-  const { url } = req.body ?? {};
+  const sameOrigin = Array.from(discovered).filter(u => {
+    try { return new URL(u).hostname === new URL(origin).hostname && isPageUrl(u); } catch { return false; }
+  });
+
+  if (sameOrigin.length > 0) {
+    onProgress({ type: 'progress', count: sameOrigin.length });
+    if (sameOrigin.length > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
+    const tier = getTier(sameOrigin.length);
+    onProgress({ type: 'complete', pageCount: sameOrigin.length, tier: tier?.label, price: tier?.price ?? null });
+    return;
+  }
+
+  await crawlSite(origin, onProgress);
+}
+
+export default async function handler(req) {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body;
+  try { body = await req.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { url } = body ?? {};
   if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: 'Missing url field' });
+    return new Response(JSON.stringify({ error: 'Missing url field' }), {
+      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
+    });
   }
 
   let origin;
-  try {
-    origin = normalizeOrigin(url);
-  } catch {
-    return res.status(400).json({ error: 'Invalid URL' });
-  }
-
-  try {
-    // Sitemap path — fast and accurate for most sites
-    const candidates = await findSitemapCandidates(origin);
-    const discovered = new Set();
-    for (const candidate of candidates) {
-      await parseSitemap(candidate, discovered);
-      if (discovered.size > 201) break;
-    }
-
-    const sameOrigin = Array.from(discovered).filter(u => {
-      try { return new URL(u).hostname === new URL(origin).hostname && isPageUrl(u); } catch { return false; }
+  try { origin = normalizeOrigin(url); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid URL' }), {
+      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
-
-    if (sameOrigin.length > 0) {
-      if (sameOrigin.length > 200) return res.json({ overLimit: true });
-      const tier = getTier(sameOrigin.length);
-      return res.json({ pageCount: sameOrigin.length, tier: tier?.label, price: tier?.price ?? null });
-    }
-
-    // Crawl fallback for sites without a sitemap
-    const { count, hitCap } = await crawlSite(origin);
-    if (hitCap) return res.json({ hitCap: true, pageCount: count });
-    if (count > 200) return res.json({ overLimit: true });
-    const tier = getTier(count);
-    return res.json({ pageCount: count, tier: tier?.label, price: tier?.price ?? null });
-
-  } catch (err) {
-    console.error('[estimate]', err);
-    return res.status(500).json({ error: 'Failed to scan site. Please try again.' });
   }
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        await discoverUrls(origin, send);
+      } catch {
+        send({ type: 'error', message: 'Scan failed. Please try again.' });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      ...CORS,
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }

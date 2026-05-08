@@ -1,7 +1,1 @@
-{
-  "functions": {
-    "api/public/estimate.js": {
-      "maxDuration": 10
-    }
-  }
-}
+{}
