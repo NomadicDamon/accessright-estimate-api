@@ -54,7 +54,7 @@ async function findSitemapCandidates(origin) {
 }
 
 async function parseSitemap(url, urlSet, onProgress, depth = 0) {
-  if (depth > 5 || urlSet.size > 201) return;
+  if (depth > 5) return;
   try {
     const res = await fetch(url, { signal: abortAfter(5000) });
     if (!res.ok) return;
@@ -67,7 +67,6 @@ async function parseSitemap(url, urlSet, onProgress, depth = 0) {
         urlSet.add(trimmed);
         if (urlSet.size % 5 === 0) onProgress({ type: 'progress', count: urlSet.size });
       }
-      if (urlSet.size > 201) return;
     }
   } catch {}
 }
@@ -120,7 +119,7 @@ async function crawlSite(origin, onProgress) {
   const count = visited.size;
   if (count > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
   const tier = getTier(count);
-  onProgress({ type: 'complete', pageCount: count, tier: tier?.label, price: tier?.price ?? null });
+  onProgress({ type: 'complete', pageCount: count, tier: tier?.label, price: tier?.price ?? null, pages: Array.from(visited).sort() });
 }
 
 async function discoverUrls(origin, onProgress) {
@@ -129,7 +128,6 @@ async function discoverUrls(origin, onProgress) {
 
   for (const candidate of candidates) {
     await parseSitemap(candidate, discovered, onProgress);
-    if (discovered.size > 201) break;
   }
 
   const sameOrigin = Array.from(discovered).filter(u => {
@@ -140,7 +138,7 @@ async function discoverUrls(origin, onProgress) {
     onProgress({ type: 'progress', count: sameOrigin.length });
     if (sameOrigin.length > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
     const tier = getTier(sameOrigin.length);
-    onProgress({ type: 'complete', pageCount: sameOrigin.length, tier: tier?.label, price: tier?.price ?? null });
+    onProgress({ type: 'complete', pageCount: sameOrigin.length, tier: tier?.label, price: tier?.price ?? null, pages: sameOrigin.sort() });
     return;
   }
 
