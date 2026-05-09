@@ -8,10 +8,10 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|svg|ico|avif|bmp|tiff?)(\?.*)?$/i;
+const NON_PAGE_EXT = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar\.gz|gz|rar|7z|mp3|wav|ogg|flac|aac|m4a|mp4|avi|mov|wmv|flv|webm|mkv|woff2?|ttf|eot|otf|js|css|json|csv|map|swf|exe|dmg|pkg|deb|rpm|png|jpg|jpeg|gif|webp|svg|ico|avif|bmp|tiff?)(\?.*)?$/i;
 
 function isPageUrl(u) {
-  try { return !IMAGE_EXT.test(new URL(u).pathname); } catch { return false; }
+  try { return !NON_PAGE_EXT.test(new URL(u).pathname); } catch { return false; }
 }
 
 function normalizeOrigin(url) {
