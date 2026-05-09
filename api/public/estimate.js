@@ -9,9 +9,23 @@ const CORS = {
 };
 
 const NON_PAGE_EXT = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar\.gz|gz|rar|7z|mp3|wav|ogg|flac|aac|m4a|mp4|avi|mov|wmv|flv|webm|mkv|woff2?|ttf|eot|otf|js|css|json|csv|map|swf|exe|dmg|pkg|deb|rpm|png|jpg|jpeg|gif|webp|svg|ico|avif|bmp|tiff?)(\?.*)?$/i;
+const NON_PAGE_PATH = /\/wp-json(\/|$)|\/feed(\/|$)|\/page\/\d+\/|%7[Bb]%7[Bb]|\{\{|xmlrpc\.php/i;
 
 function isPageUrl(u) {
-  try { return !NON_PAGE_EXT.test(new URL(u).pathname); } catch { return false; }
+  try {
+    const p = new URL(u).pathname;
+    return !NON_PAGE_EXT.test(p) && !NON_PAGE_PATH.test(p);
+  } catch { return false; }
+}
+
+function normalizePageUrl(u) {
+  try {
+    const parsed = new URL(u);
+    parsed.pathname = parsed.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+    parsed.hash = '';
+    parsed.search = '';
+    return parsed.href;
+  } catch { return null; }
 }
 
 function normalizeOrigin(url) {
@@ -64,8 +78,11 @@ async function parseSitemap(url, urlSet, onProgress, depth = 0) {
       if (trimmed.endsWith('.xml') || trimmed.endsWith('.xml.gz')) {
         await parseSitemap(trimmed, urlSet, onProgress, depth + 1);
       } else {
-        urlSet.add(trimmed);
-        if (urlSet.size % 5 === 0) onProgress({ type: 'progress', count: urlSet.size });
+        const norm = normalizePageUrl(trimmed);
+        if (norm) {
+          urlSet.add(norm);
+          if (urlSet.size % 5 === 0) onProgress({ type: 'progress', count: urlSet.size });
+        }
       }
     }
   } catch {}
@@ -78,11 +95,11 @@ function extractLinks(html, origin) {
   let m;
   while ((m = re.exec(html)) !== null) {
     try {
-      const u = new URL(new URL(m[1], origin).href);
-      if (u.hostname === originHost && u.protocol.startsWith('http') && isPageUrl(u.href)) {
-        u.hash = '';
-        u.search = '';
-        links.add(u.href);
+      const norm = normalizePageUrl(new URL(m[1], origin).href);
+      if (!norm) continue;
+      const u = new URL(norm);
+      if (u.hostname === originHost && u.protocol.startsWith('http') && isPageUrl(norm)) {
+        links.add(norm);
       }
     } catch {}
   }
