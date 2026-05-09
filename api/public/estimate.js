@@ -120,7 +120,7 @@ async function crawlSite(origin, onProgress) {
         if (visited.has(url)) return;
         visited.add(url);
         try {
-          const res = await fetch(url, { signal: abortAfter(2000) });
+          const res = await fetch(url, { signal: abortAfter(1000) });
           if (!res.ok) return;
           for (const link of extractLinks(await res.text(), origin)) {
             if (!visited.has(link) && !queued.has(link)) queued.add(link);
