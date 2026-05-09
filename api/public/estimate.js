@@ -33,16 +33,37 @@ function normalizeOrigin(url) {
   return `${u.protocol}//${u.host}`;
 }
 
-const TIERS = [
-  { max: 10,  price: 500,  label: 'Up to 10 pages' },
-  { max: 50,  price: 1000, label: 'Up to 50 pages' },
-  { max: 100, price: 2000, label: 'Up to 100 pages' },
-  { max: 200, price: 3000, label: 'Up to 200 pages' },
-];
+// ── Pricing config ────────────────────────────────────────────────────────────
+// Base fee covers the first basePages pages. Each additional page is charged at
+// the rate for the tier it falls into — rates decrease at each volume break.
+const PRICING = {
+  base:      500,  // minimum price
+  basePages: 10,   // pages included in base
+  tiers: [
+    { upTo: 50,       rate: 20 },  // pages 11–50
+    { upTo: 100,      rate: 14 },  // pages 51–100
+    { upTo: 150,      rate: 11 },  // pages 101–150
+    { upTo: 200,      rate: 9  },  // pages 151–200
+    { upTo: Infinity, rate: 7  },  // pages 201+
+  ],
+};
 
-function getTier(count) {
-  return TIERS.find(t => count <= t.max) ?? null;
+function calculatePrice(pageCount) {
+  if (pageCount <= PRICING.basePages) return PRICING.base;
+  let price = PRICING.base;
+  let prev = PRICING.basePages;
+  let remaining = pageCount - PRICING.basePages;
+  for (const tier of PRICING.tiers) {
+    const inTier = Math.min(remaining, tier.upTo - prev);
+    if (inTier <= 0) break;
+    price += inTier * tier.rate;
+    remaining -= inTier;
+    prev = tier.upTo;
+    if (remaining <= 0) break;
+  }
+  return price;
 }
+// ──────────────────────────────────────────────────────────────────────────────
 
 function abortAfter(ms) {
   const ctrl = new AbortController();
@@ -135,8 +156,7 @@ async function crawlSite(origin, onProgress) {
 
   const count = visited.size;
   if (count > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
-  const tier = getTier(count);
-  onProgress({ type: 'complete', pageCount: count, tier: tier?.label, price: tier?.price ?? null, pages: Array.from(visited).sort() });
+  onProgress({ type: 'complete', pageCount: count, price: calculatePrice(count), pages: Array.from(visited).sort() });
 }
 
 async function discoverUrls(origin, onProgress) {
@@ -154,8 +174,7 @@ async function discoverUrls(origin, onProgress) {
   if (sameOrigin.length > 0) {
     onProgress({ type: 'progress', count: sameOrigin.length });
     if (sameOrigin.length > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
-    const tier = getTier(sameOrigin.length);
-    onProgress({ type: 'complete', pageCount: sameOrigin.length, tier: tier?.label, price: tier?.price ?? null, pages: sameOrigin.sort() });
+    onProgress({ type: 'complete', pageCount: sameOrigin.length, price: calculatePrice(sameOrigin.length), pages: sameOrigin.sort() });
     return;
   }
 
