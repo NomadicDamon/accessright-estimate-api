@@ -132,7 +132,7 @@ async function crawlSite(origin, onProgress) {
   const queued = new Set([`${origin}/`]);
   const deadline = Date.now() + 25000; // leave 5s for overhead within the 30s Edge limit
 
-  while (queued.size > 0 && visited.size <= 200 && Date.now() < deadline) {
+  while (queued.size > 0 && Date.now() < deadline) {
     const batch = Array.from(queued).slice(0, 10);
     for (const u of batch) queued.delete(u);
 
@@ -151,11 +151,9 @@ async function crawlSite(origin, onProgress) {
     );
 
     onProgress({ type: 'progress', count: visited.size });
-    if (visited.size > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
   }
 
   const count = visited.size;
-  if (count > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
   onProgress({ type: 'complete', pageCount: count, price: calculatePrice(count), pages: Array.from(visited).sort() });
 }
 
@@ -173,7 +171,6 @@ async function discoverUrls(origin, onProgress) {
 
   if (sameOrigin.length > 0) {
     onProgress({ type: 'progress', count: sameOrigin.length });
-    if (sameOrigin.length > 200) { onProgress({ type: 'complete', overLimit: true }); return; }
     onProgress({ type: 'complete', pageCount: sameOrigin.length, price: calculatePrice(sameOrigin.length), pages: sameOrigin.sort() });
     return;
   }
