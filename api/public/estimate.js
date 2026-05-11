@@ -1,12 +1,4 @@
-// Edge Function — streams page-discovery progress as SSE events.
-// Vercel Edge Runtime gives 30s, no crawl cap needed.
-export const config = { runtime: 'edge' };
-
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+// Serverless Function — streams page-discovery progress as SSE events.
 
 const NON_PAGE_EXT = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar\.gz|gz|rar|7z|mp3|wav|ogg|flac|aac|m4a|mp4|avi|mov|wmv|flv|webm|mkv|woff2?|ttf|eot|otf|js|css|json|csv|map|swf|exe|dmg|pkg|deb|rpm|png|jpg|jpeg|gif|webp|svg|ico|avif|bmp|tiff?)(\?.*)?$/i;
 const NON_PAGE_PATH = /\/wp-json(\/|$)|\/feed(\/|$)|\/page\/\d+\/|%7[Bb]%7[Bb]|\{\{|xmlrpc\.php/i;
@@ -33,18 +25,16 @@ function normalizeOrigin(url) {
   return `${u.protocol}//${u.host}`;
 }
 
-// ── Pricing config ────────────────────────────────────────────────────────────
-// Base fee covers the first basePages pages. Each additional page is charged at
-// the rate for the tier it falls into — rates decrease at each volume break.
+// ── Pricing config ───────────────────────────────────────────────────────────���
 const PRICING = {
-  base:      500,  // minimum price
-  basePages: 10,   // pages included in base
+  base:      500,
+  basePages: 10,
   tiers: [
-    { upTo: 50,       rate: 20 },  // pages 11–50
-    { upTo: 100,      rate: 14 },  // pages 51–100
-    { upTo: 150,      rate: 11 },  // pages 101–150
-    { upTo: 200,      rate: 9  },  // pages 151–200
-    { upTo: Infinity, rate: 7  },  // pages 201+
+    { upTo: 50,       rate: 20 },
+    { upTo: 100,      rate: 14 },
+    { upTo: 150,      rate: 11 },
+    { upTo: 200,      rate: 9  },
+    { upTo: Infinity, rate: 7  },
   ],
 };
 
@@ -63,7 +53,7 @@ function calculatePrice(pageCount) {
   }
   return price;
 }
-// ──────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 function abortAfter(ms) {
   const ctrl = new AbortController();
@@ -74,7 +64,7 @@ function abortAfter(ms) {
 async function findSitemapCandidates(origin) {
   const candidates = [];
   try {
-    const res = await fetch(`${origin}/robots.txt`, { signal: abortAfter(5000) });
+    const res = await fetch(`${origin}/robots.txt`, { signal: abortAfter(8000) });
     if (res.ok) {
       const text = await res.text();
       for (const m of text.match(/^Sitemap:\s*(.+)$/gim) ?? []) {
@@ -91,7 +81,7 @@ async function findSitemapCandidates(origin) {
 async function parseSitemap(url, urlSet, onProgress, depth = 0) {
   if (depth > 5) return;
   try {
-    const res = await fetch(url, { signal: abortAfter(5000) });
+    const res = await fetch(url, { signal: abortAfter(10000) });
     if (!res.ok) return;
     const text = await res.text();
     for (const [, loc] of text.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/g)) {
@@ -130,7 +120,7 @@ function extractLinks(html, origin) {
 async function crawlSite(origin, onProgress) {
   const visited = new Set();
   const queued = new Set([`${origin}/`]);
-  const deadline = Date.now() + 25000; // leave 5s for overhead within the 30s Edge limit
+  const deadline = Date.now() + 50000; // 50s budget within the 60s function limit
 
   while (queued.size > 0 && Date.now() < deadline) {
     const batch = Array.from(queued).slice(0, 10);
@@ -141,7 +131,7 @@ async function crawlSite(origin, onProgress) {
         if (visited.has(url)) return;
         visited.add(url);
         try {
-          const res = await fetch(url, { signal: abortAfter(1000) });
+          const res = await fetch(url, { signal: abortAfter(8000) });
           if (!res.ok) return;
           for (const link of extractLinks(await res.text(), origin)) {
             if (!visited.has(link) && !queued.has(link)) queued.add(link);
@@ -178,57 +168,53 @@ async function discoverUrls(origin, onProgress) {
   await crawlSite(origin, onProgress);
 }
 
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+export default async function handler(req, res) {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).end();
+    return;
+  }
+
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405, headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
   }
 
-  let body;
-  try { body = await req.json(); } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
-  }
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
 
-  const { url } = body ?? {};
+  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  const { url } = req.body ?? {};
   if (!url || typeof url !== 'string') {
-    return new Response(JSON.stringify({ error: 'Missing url field' }), {
-      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+    send({ type: 'error', message: 'Missing url field' });
+    res.end();
+    return;
   }
 
   let origin;
-  try { origin = normalizeOrigin(url); } catch {
-    return new Response(JSON.stringify({ error: 'Invalid URL' }), {
-      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
-    });
+  try {
+    origin = normalizeOrigin(url);
+  } catch {
+    send({ type: 'error', message: 'Invalid URL' });
+    res.end();
+    return;
   }
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (data) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
-      try {
-        await discoverUrls(origin, send);
-      } catch {
-        send({ type: 'error', message: 'Scan failed. Please try again.' });
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      ...CORS,
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'X-Accel-Buffering': 'no',
-    },
-  });
+  try {
+    await discoverUrls(origin, send);
+  } catch {
+    send({ type: 'error', message: 'Scan failed. Please try again.' });
+  } finally {
+    res.end();
+  }
 }
