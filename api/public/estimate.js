@@ -25,33 +25,15 @@ function normalizeOrigin(url) {
   return `${u.protocol}//${u.host}`;
 }
 
-// ── Pricing config ───────────────────────────────────────────────────────────���
-const PRICING = {
-  base:      500,
-  basePages: 10,
-  tiers: [
-    { upTo: 50,       rate: 20 },
-    { upTo: 100,      rate: 14 },
-    { upTo: 150,      rate: 11 },
-    { upTo: 200,      rate: 9  },
-    { upTo: Infinity, rate: 7  },
-  ],
-};
-
+// ── Pricing config ───────────────────────────────────────────────────────────
+// Simple model: rate applies to ALL pages over 10, based on total page count.
 function calculatePrice(pageCount) {
-  if (pageCount <= PRICING.basePages) return PRICING.base;
-  let price = PRICING.base;
-  let prev = PRICING.basePages;
-  let remaining = pageCount - PRICING.basePages;
-  for (const tier of PRICING.tiers) {
-    const inTier = Math.min(remaining, tier.upTo - prev);
-    if (inTier <= 0) break;
-    price += inTier * tier.rate;
-    remaining -= inTier;
-    prev = tier.upTo;
-    if (remaining <= 0) break;
-  }
-  return price;
+  if (pageCount <= 10)  return 500;
+  if (pageCount <= 50)  return 500 + (pageCount - 10) * 10;
+  if (pageCount <= 100) return 500 + (pageCount - 10) * 8;
+  if (pageCount <= 150) return 500 + (pageCount - 10) * 7;
+  if (pageCount <= 200) return 500 + (pageCount - 10) * 6;
+  return null; // custom quote
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -144,7 +126,8 @@ async function crawlSite(origin, onProgress) {
   }
 
   const count = visited.size;
-  onProgress({ type: 'complete', pageCount: count, price: calculatePrice(count), pages: Array.from(visited).sort() });
+  const price = calculatePrice(count);
+  onProgress({ type: 'complete', pageCount: count, price, overLimit: price === null, pages: Array.from(visited).sort() });
 }
 
 async function discoverUrls(origin, onProgress) {
@@ -161,7 +144,8 @@ async function discoverUrls(origin, onProgress) {
 
   if (sameOrigin.length > 0) {
     onProgress({ type: 'progress', count: sameOrigin.length });
-    onProgress({ type: 'complete', pageCount: sameOrigin.length, price: calculatePrice(sameOrigin.length), pages: sameOrigin.sort() });
+    const sameOriginPrice = calculatePrice(sameOrigin.length);
+    onProgress({ type: 'complete', pageCount: sameOrigin.length, price: sameOriginPrice, overLimit: sameOriginPrice === null, pages: sameOrigin.sort() });
     return;
   }
 
