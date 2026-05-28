@@ -32,7 +32,7 @@ function calculatePrice(pageCount) {
   if (pageCount <= 50)  return 500 + (pageCount - 10) * 10;
   if (pageCount <= 100) return 500 + (pageCount - 10) * 8;
   if (pageCount <= 150) return 500 + (pageCount - 10) * 7;
-  if (pageCount <= 200) return 500 + (pageCount - 10) * 6;
+  if (pageCount <= 500) return 500 + (pageCount - 10) * 6;
   return null; // custom quote
 }
 // ─────────────────────────────────────────────────────────────────────────────
